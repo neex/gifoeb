@@ -1,6 +1,6 @@
 ### Summary
 
-ImageMagick/GraphicsMagick's gif parser leaves the palette uninitialized if neither global nor local palette is present. If IM/GM is used as a library loaded into a process that operates on interesting data, this data sometimes can be leaked via the uninitialized palette.
+ImageMagick/GraphicsMagick's gif parser before https://github.com/ImageMagick/ImageMagick/commit/9fd10cf630832b36a588c1545d8736539b2f1fb5 leaves the palette uninitialized if neither global nor local palette is present. If IM/GM is used as a library loaded into a process that operates on interesting data, this data sometimes can be leaked via the uninitialized palette.
 
 ### How to use
 
